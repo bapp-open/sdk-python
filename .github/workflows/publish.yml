@@ -1,0 +1,53 @@
+name: Publish to PyPI
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check if version changed
+        id: version
+        run: |
+          NEW_VERSION=$(python -c "
+          import tomllib
+          with open('pyproject.toml', 'rb') as f:
+              print(tomllib.load(f)['project']['version'])
+          ")
+          OLD_VERSION=$(git show HEAD~1:pyproject.toml | python -c "
+          import tomllib, sys
+          print(tomllib.load(sys.stdin.buffer)['project']['version'])
+          " 2>/dev/null || echo "")
+          echo "new=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "old=$OLD_VERSION" >> "$GITHUB_OUTPUT"
+          if [ "$NEW_VERSION" != "$OLD_VERSION" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Version changed: $OLD_VERSION -> $NEW_VERSION"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Version unchanged: $NEW_VERSION"
+          fi
+
+      - name: Set up Python
+        if: steps.version.outputs.changed == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build package
+        if: steps.version.outputs.changed == 'true'
+        run: |
+          pip install build
+          python -m build
+
+      - name: Publish to PyPI
+        if: steps.version.outputs.changed == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1

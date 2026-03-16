@@ -173,6 +173,111 @@ class BappApiClient:
         """Delete an entity."""
         return self._request("DELETE", f"/content-type/{content_type}/{id}/")
 
+    # -- document views ------------------------------------------------------
+
+    def get_document_views(self, record):
+        """Extract available document views from a record.
+
+        Works with both ``public_view`` (new) and ``view_token`` (legacy)
+        formats.  Returns a list of dicts with keys: ``label``, ``token``,
+        ``type`` (``"public_view"`` or ``"view_token"``), ``variations``,
+        and ``default_variation``.
+        """
+        views = []
+        for entry in (record.get("public_view") or []):
+            views.append({
+                "label": entry.get("label", ""),
+                "token": entry.get("view_token", ""),
+                "type": "public_view",
+                "variations": entry.get("variations"),
+                "default_variation": entry.get("default_variation"),
+            })
+        for entry in (record.get("view_token") or []):
+            views.append({
+                "label": entry.get("label", ""),
+                "token": entry.get("view_token", ""),
+                "type": "view_token",
+                "variations": None,
+                "default_variation": None,
+            })
+        return views
+
+    def get_document_url(self, record, output="html", label=None, variation=None):
+        """Build a document render/download URL from a record.
+
+        Works with both ``public_view`` and ``view_token`` formats.
+        Prefers ``public_view`` when both are present on a record.
+
+        Args:
+            record: Entity dict from :meth:`list` or :meth:`get`.
+            output: Desired format — ``"html"``, ``"pdf"``, ``"jpg"``, or
+                ``"context"``.
+            label: Select a specific view by label (first match wins).
+                When *None* the first available view is used.
+            variation: Variation code for ``public_view`` entries that
+                support variations (e.g. ``"v4"``).  Falls back to the
+                entry's ``default_variation`` when *None*.
+
+        Returns:
+            URL string, or *None* if the record has no view tokens.
+        """
+        views = self.get_document_views(record)
+        if not views:
+            return None
+
+        view = None
+        if label is not None:
+            for v in views:
+                if v["label"] == label:
+                    view = v
+                    break
+        if view is None:
+            view = views[0]
+
+        token = view["token"]
+        if not token:
+            return None
+
+        if view["type"] == "public_view":
+            url = f"{self.host}/render/{token}?output={output}"
+            v = variation or view.get("default_variation")
+            if v:
+                url += f"&variation={v}"
+            return url
+
+        # Legacy view_token
+        actions = {"pdf": "pdf.download", "context": "pdf.context"}
+        action = actions.get(output, "pdf.preview")
+        return f"{self.host}/documents/{action}?token={token}"
+
+    def get_document_content(self, record, output="html", label=None, variation=None):
+        """Fetch document content (PDF, HTML, JPG, etc.) as bytes.
+
+        Builds the URL via :meth:`get_document_url` and fetches the raw
+        content.  The token embedded in the URL provides authentication.
+
+        Args:
+            record: Entity dict from :meth:`list` or :meth:`get`.
+            output: Desired format — ``"html"``, ``"pdf"``, ``"jpg"``, or
+                ``"context"``.
+            label: Select a specific view by label.
+            variation: Variation code for ``public_view`` entries.
+
+        Returns:
+            ``bytes`` content, or *None* if the record has no view tokens.
+
+        Raises:
+            requests.HTTPError: On non-2xx responses.
+        """
+        url = self.get_document_url(
+            record, output=output, label=label, variation=variation,
+        )
+        if url is None:
+            return None
+        resp = self._session.get(url)
+        resp.raise_for_status()
+        return resp.content
+
     # -- tasks ---------------------------------------------------------------
 
     def list_tasks(self):

@@ -202,7 +202,8 @@ class BappApiClient:
             })
         return views
 
-    def get_document_url(self, record, output="html", label=None, variation=None):
+    def get_document_url(self, record, output="html", label=None,
+                         variation=None, download=False):
         """Build a document render/download URL from a record.
 
         Works with both ``public_view`` and ``view_token`` formats.
@@ -217,6 +218,11 @@ class BappApiClient:
             variation: Variation code for ``public_view`` entries that
                 support variations (e.g. ``"v4"``).  Falls back to the
                 entry's ``default_variation`` when *None*.
+            download: When *True* the response is sent as an attachment
+                (``Content-Disposition: attachment``).  For ``public_view``
+                this appends ``&download=true``; for legacy ``view_token``
+                with ``output="pdf"`` this selects ``pdf.download`` instead
+                of ``pdf.view``.
 
         Returns:
             URL string, or *None* if the record has no view tokens.
@@ -243,14 +249,21 @@ class BappApiClient:
             v = variation or view.get("default_variation")
             if v:
                 url += f"&variation={v}"
+            if download:
+                url += "&download=true"
             return url
 
         # Legacy view_token
-        actions = {"pdf": "pdf.download", "context": "pdf.context"}
-        action = actions.get(output, "pdf.preview")
+        if output == "pdf":
+            action = "pdf.download" if download else "pdf.view"
+        elif output == "context":
+            action = "pdf.context"
+        else:
+            action = "pdf.preview"
         return f"{self.host}/documents/{action}?token={token}"
 
-    def get_document_content(self, record, output="html", label=None, variation=None):
+    def get_document_content(self, record, output="html", label=None,
+                             variation=None, download=False):
         """Fetch document content (PDF, HTML, JPG, etc.) as bytes.
 
         Builds the URL via :meth:`get_document_url` and fetches the raw
@@ -262,6 +275,8 @@ class BappApiClient:
                 ``"context"``.
             label: Select a specific view by label.
             variation: Variation code for ``public_view`` entries.
+            download: When *True* the server sends the response as an
+                attachment.
 
         Returns:
             ``bytes`` content, or *None* if the record has no view tokens.
@@ -271,6 +286,7 @@ class BappApiClient:
         """
         url = self.get_document_url(
             record, output=output, label=label, variation=variation,
+            download=download,
         )
         if url is None:
             return None

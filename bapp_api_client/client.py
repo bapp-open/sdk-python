@@ -54,15 +54,19 @@ class BappApiClient:
         host="https://panel.bapp.ro/api",
         tenant=None,
         app="account",
+        user_agent=None,
     ):
         self.host = host.rstrip("/")
         self.tenant = tenant
         self.app = app
+        self.user_agent = user_agent
         self._session = requests.Session()
         if bearer:
             self._session.headers["Authorization"] = f"Bearer {bearer}"
         elif token:
             self._session.headers["Authorization"] = f"Token {token}"
+        if user_agent:
+            self._session.headers["User-Agent"] = user_agent
 
     # -- internals -----------------------------------------------------------
 

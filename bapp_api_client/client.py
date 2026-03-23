@@ -1,7 +1,10 @@
 """BAPP Auto API Client for Python."""
 
 import io
+import random
 import time
+import urllib.parse
+
 import requests
 
 
@@ -55,11 +58,15 @@ class BappApiClient:
         tenant=None,
         app="account",
         user_agent=None,
+        timeout=30,
+        max_retries=3,
     ):
         self.host = host.rstrip("/")
         self.tenant = tenant
         self.app = app
         self.user_agent = user_agent
+        self._timeout = timeout
+        self._max_retries = max_retries
         self._session = requests.Session()
         if bearer:
             self._session.headers["Authorization"] = f"Bearer {bearer}"
@@ -96,17 +103,29 @@ class BappApiClient:
             kwargs["data"] = data
         else:
             kwargs["json"] = json
-        resp = self._session.request(
-            method,
-            f"{self.host}{path}",
-            params=params,
-            headers=self._headers(headers),
-            **kwargs,
-        )
-        resp.raise_for_status()
-        if resp.status_code == 204:
-            return None
-        return resp.json()
+
+        for attempt in range(self._max_retries + 1):
+            try:
+                resp = self._session.request(
+                    method,
+                    f"{self.host}{path}",
+                    params=params,
+                    headers=self._headers(headers),
+                    timeout=self._timeout,
+                    **kwargs,
+                )
+                if resp.status_code in (429, 502, 503, 504) and attempt < self._max_retries:
+                    time.sleep(min(2 ** attempt + random.random(), 10))
+                    continue
+                resp.raise_for_status()
+                if resp.status_code == 204:
+                    return None
+                return resp.json()
+            except requests.exceptions.ConnectionError:
+                if attempt >= self._max_retries:
+                    raise
+                time.sleep(min(2 ** attempt + random.random(), 10))
+        return None  # unreachable
 
     # -- user ----------------------------------------------------------------
 
@@ -249,13 +268,13 @@ class BappApiClient:
             return None
 
         if view["type"] == "public_view":
-            url = f"{self.host}/render/{token}?output={output}"
+            params = {"output": output}
             v = variation or view.get("default_variation")
             if v:
-                url += f"&variation={v}"
+                params["variation"] = v
             if download:
-                url += "&download=true"
-            return url
+                params["download"] = "true"
+            return f"{self.host}/render/{token}?{urllib.parse.urlencode(params)}"
 
         # Legacy view_token
         if output == "pdf":
@@ -264,7 +283,7 @@ class BappApiClient:
             action = "pdf.context"
         else:
             action = "pdf.preview"
-        return f"{self.host}/documents/{action}?token={token}"
+        return f"{self.host}/documents/{action}?{urllib.parse.urlencode({'token': token})}"
 
     def get_document_content(self, record, output="html", label=None,
                              variation=None, download=False):
@@ -294,9 +313,46 @@ class BappApiClient:
         )
         if url is None:
             return None
-        resp = self._session.get(url)
+        resp = self._session.get(url, timeout=self._timeout)
         resp.raise_for_status()
         return resp.content
+
+    def download_document(self, record, dest, output="html", label=None,
+                          variation=None, download=False, chunk_size=8192):
+        """Stream document content directly to a file.
+
+        Like :meth:`get_document_content` but writes to *dest* in chunks,
+        avoiding loading the entire document into memory.
+
+        Args:
+            record: Entity dict from :meth:`list` or :meth:`get`.
+            dest: File path to write to.
+            output: Desired format — ``"html"``, ``"pdf"``, ``"jpg"``, or
+                ``"context"``.
+            label: Select a specific view by label.
+            variation: Variation code for ``public_view`` entries.
+            download: When *True* the server sends the response as an
+                attachment.
+            chunk_size: Size of chunks to stream (default 8192 bytes).
+
+        Returns:
+            *True* if the document was saved, *False* if no view tokens.
+
+        Raises:
+            requests.HTTPError: On non-2xx responses.
+        """
+        url = self.get_document_url(
+            record, output=output, label=label, variation=variation,
+            download=download,
+        )
+        if url is None:
+            return False
+        with self._session.get(url, stream=True, timeout=self._timeout) as resp:
+            resp.raise_for_status()
+            with open(dest, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=chunk_size):
+                    f.write(chunk)
+        return True
 
     # -- tasks ---------------------------------------------------------------
 
